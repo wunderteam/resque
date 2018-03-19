@@ -176,11 +176,16 @@ module Resque
     end
 
     def queues=(queues)
-      queues = queues.empty? ? (ENV["QUEUES"] || ENV['QUEUE']).to_s.split(',') : queues
-      @queues = queues.map { |queue| queue.to_s.strip }
-      unless ['*', '?', '{', '}', '[', ']'].any? {|char| @queues.join.include?(char) }
+      queues = (ENV["QUEUES"] || ENV['QUEUE']).to_s.split(',') if queues.empty?
+      queues = queues.map { |queue| queue.to_s.strip }
+
+      @skip_queues, @queues = queues.partition { |queue| queue.start_with?('!') }
+      @skip_queues.map! { |queue| queue[1..-1] }
+
+      unless @skip_queues.any? || ['*', '?', '{', '}', '[', ']'].any? { |char| @queues.join.include?(char) }
         @static_queues = @queues.flatten.uniq
       end
+
       validate_queues
     end
 
@@ -204,7 +209,8 @@ module Resque
 
     def glob_match(pattern)
       Resque.queues.select do |queue|
-        File.fnmatch?(pattern, queue)
+        File.fnmatch?(pattern, queue) &&
+          @skip_queues.none? { |skip_pattern| File.fnmatch?(skip_pattern, queue) }
       end.sort
     end
 

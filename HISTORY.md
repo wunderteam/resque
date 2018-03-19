@@ -1,6 +1,7 @@
 ## Unreleased
 
-Nothing yet!
+### Changed
+* Add support for specifying queues that workers should ignore when using globs
 
 ## 1.27.4 (2017-4-15)
 
