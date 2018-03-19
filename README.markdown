@@ -354,6 +354,23 @@ queues created on the fly, you can use a splat:
 Queues will be processed in alphabetical order.
 
 
+### Running All Queues Except for Some
+
+If you want your workers to work off of all queues except for some,
+you can use negation:
+
+    $ QUEUE=*,!low rake resque:work
+
+Negated globs also work. The following will instruct workers to work
+off of all queues except those beginning with `file_`:
+
+    $ QUEUE=*,!file_* rake resque:work
+
+Note that the order in which negated queues are specified does not
+matter, so `QUEUE=*,!file_*` and `QUEUE=!file_*,*` will have the same
+effect.
+
+
 ### Running Multiple Workers
 
 At GitHub we use god to start and stop multiple workers. A sample god

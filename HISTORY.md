@@ -6,6 +6,7 @@
 * Fix failed jobs page "argument out of range" error
 * Only run eager_load! if Rails.application.config.eager_load is true
 * Don't display log message if running without hooks
+* Add support for specifying queues that workers should ignore when using globs
 
 ## 1.27.4 (2017-04-15)
 
