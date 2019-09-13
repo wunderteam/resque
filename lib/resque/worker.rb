@@ -145,6 +145,9 @@ module Resque
       @paused = nil
       @before_first_fork_hook_ran = false
 
+      @heartbeat_thread = nil
+      @heartbeat_thread_signal = nil
+
       verbose_value = ENV['LOGGING'] || ENV['VERBOSE']
       self.verbose = verbose_value if verbose_value
       self.very_verbose = ENV['VVERBOSE'] if ENV['VVERBOSE']
@@ -162,9 +165,6 @@ module Resque
     # once per worker.
     def prepare
       if ENV['BACKGROUND']
-        unless Process.respond_to?('daemon')
-            abort "env var BACKGROUND is set, which requires ruby >= 1.9"
-        end
         Process.daemon(true)
       end
 
@@ -175,6 +175,8 @@ module Resque
       self.reconnect if ENV['BACKGROUND']
     end
 
+    WILDCARDS = ['*', '?', '{', '}', '[', ']'].freeze
+
     def queues=(queues)
       queues = (ENV["QUEUES"] || ENV['QUEUE']).to_s.split(',') if queues.empty?
       queues = queues.map { |queue| queue.to_s.strip }
@@ -182,9 +184,8 @@ module Resque
       @skip_queues, @queues = queues.partition { |queue| queue.start_with?('!') }
       @skip_queues.map! { |queue| queue[1..-1] }
 
-      unless @skip_queues.any? || ['*', '?', '{', '}', '[', ']'].any? { |char| @queues.join.include?(char) }
-        @static_queues = @queues.flatten.uniq
-      end
+      @has_dynamic_queues =
+        @skip_queues.any? || WILDCARDS.any? { |char| @queues.join.include?(char) }
 
       validate_queues
     end
@@ -203,12 +204,16 @@ module Resque
     # A splat ("*") means you want every queue (in alpha order) - this
     # can be useful for dynamically adding new queues.
     def queues
-      return @static_queues if @static_queues
-      @queues.map { |queue| glob_match(queue) }.flatten.uniq
+      if @has_dynamic_queues
+        current_queues = Resque.queues
+        @queues.map { |queue| glob_match(current_queues, queue) }.flatten.uniq
+      else
+        @queues
+      end
     end
 
-    def glob_match(pattern)
-      Resque.queues.select do |queue|
+    def glob_match(list, pattern)
+      list.select do |queue|
         File.fnmatch?(pattern, queue) &&
           @skip_queues.none? { |skip_pattern| File.fnmatch?(skip_pattern, queue) }
       end.sort
@@ -594,6 +599,8 @@ module Resque
     # By checking the current Redis state against the actual
     # environment, we can determine if Redis is old and clean it up a bit.
     def prune_dead_workers
+      return unless data_store.acquire_pruning_dead_worker_lock(self, Resque.heartbeat_interval)
+
       all_workers = Worker.all
 
       unless all_workers.empty?
@@ -610,7 +617,9 @@ module Resque
         # client library or an older version of Resque. We won't touch these.
         if all_workers_with_expired_heartbeats.include?(worker)
           log_with_severity :info, "Pruning dead worker: #{worker}"
-          worker.unregister_worker(PruneDeadWorkerDirtyExit.new(worker.to_s))
+
+          job_class = worker.job(false)['payload']['class'] rescue nil
+          worker.unregister_worker(PruneDeadWorkerDirtyExit.new(worker.to_s, job_class))
           next
         end
 
@@ -641,7 +650,8 @@ module Resque
 
     # Runs a named hook, passing along any arguments.
     def run_hook(name, *args)
-      return unless hooks = Resque.send(name)
+      hooks = Resque.send(name)
+      return if hooks.empty?
       return if name == :before_first_fork && @before_first_fork_hook_ran
       msg = "Running #{name} hooks"
       msg << " with #{args.inspect}" if args.any?
@@ -814,7 +824,7 @@ module Resque
     # machine. Useful when pruning dead workers on startup.
     def windows_worker_pids
       tasklist_output = `tasklist /FI "IMAGENAME eq ruby.exe" /FO list`.encode("UTF-8", Encoding.locale_charmap)
-      tasklist_output.split($/).select { |line| line =~ /^PID:/}.collect{ |line| line.gsub /PID:\s+/, '' }
+      tasklist_output.split($/).select { |line| line =~ /^PID:/ }.collect { |line| line.gsub(/PID:\s+/, '') }
     end
 
     # Find Resque worker pids on Linux and OS X.
@@ -856,13 +866,7 @@ module Resque
     end
 
 
-    def verbose
-      @verbose
-    end
-
-    def very_verbose
-      @very_verbose
-    end
+    attr_reader :verbose, :very_verbose
 
     def verbose=(value);
       if value && !very_verbose
@@ -915,7 +919,7 @@ module Resque
         nil
       end
 
-      job.fail(DirtyExit.new("Child process received unhandled signal #{$?.stopsig}", $?)) if $?.signaled?
+      job.fail(DirtyExit.new("Child process received unhandled signal #{$?}", $?)) if $?.signaled?
       @child = nil
     end
 

@@ -44,14 +44,20 @@ module Resque
                               :heartbeat!,
                               :remove_heartbeat,
                               :all_heartbeats,
+                              :acquire_pruning_dead_worker_lock,
                               :set_worker_payload,
                               :worker_start_time,
                               :worker_done_working
 
-      def_delegators :@stats_access, :clear_stat,
-                                     :decremet_stat,
-                                     :increment_stat,
-                                     :stat
+    def_delegators :@stats_access, :clear_stat,
+                                   :decrement_stat,
+                                   :increment_stat,
+                                   :stat
+
+    def decremet_stat(*args)
+      warn '[Resque] [Deprecation] Resque::DataStore #decremet_stat method is deprecated (please use #decrement_stat)'
+      decrement_stat(*args)
+    end
 
     # Compatibility with any non-Resque classes that were using Resque.redis as a way to access Redis
     def method_missing(sym,*args,&block)
@@ -67,19 +73,12 @@ module Resque
     # Get a string identifying the underlying server.
     # Probably should be private, but was public so must stay public
     def identifier
-      # support 1.x versions of redis-rb
-      if @redis.respond_to?(:server)
-        @redis.server
-      elsif @redis.respond_to?(:nodes) # distributed
-        @redis.nodes.map { |n| n.id }.join(', ')
-      else
-        @redis.client.id
-      end
+      @redis.inspect
     end
 
     # Force a reconnect to Redis.
     def reconnect
-      @redis.client.reconnect
+      @redis._client.reconnect
     end
 
     # Returns an array of all known Resque keys in Redis. Redis' KEYS operation
@@ -91,25 +90,9 @@ module Resque
     end
 
     def server_time
-      time, _ = redis_time_available? ? @redis.time : Time.now
+      time, _ = @redis.time
       Time.at(time)
     end
-
-    # only needed until support for Redis 2.4 is removed
-    def redis_time_available?
-      if @redis_time_available.nil? && !Resque.inline
-        begin
-          @redis_time_available = @redis.time
-        rescue Redis::CommandError
-          @redis_time_available = false
-        end
-      elsif Resque.inline
-        false
-      else
-        @redis_time_available
-      end
-    end
-    private :redis_time_available?
 
     class QueueAccess
       def initialize(redis)
@@ -291,6 +274,10 @@ module Resque
         @redis.hgetall(HEARTBEAT_KEY)
       end
 
+      def acquire_pruning_dead_worker_lock(worker, expiry)
+        @redis.set(redis_key_for_worker_pruning, worker.to_s, :ex => expiry, :nx => true)
+      end
+
       def set_worker_payload(worker, data)
         @redis.set(redis_key_for_worker(worker), data)
       end
@@ -314,6 +301,10 @@ module Resque
 
       def redis_key_for_worker_start_time(worker)
         "#{redis_key_for_worker(worker)}:started"
+      end
+
+      def redis_key_for_worker_pruning
+        "pruning_dead_workers_in_progress"
       end
     end
 

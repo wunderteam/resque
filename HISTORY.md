@@ -1,4 +1,25 @@
-## Unreleased
+## 2.0.0 (2018-11-06)
+
+### Fixed
+* Fix Airbrake failure backend
+* Fix failed jobs page "argument out of range" error
+
+### Changed
+* Remove support for Rubies < 2.3
+* Remove support to Rails < 4
+* Reduce the number of redis calls when trying to get the list of queues
+* Only run `eager_load!` if `Rails.application.config.eager_load` is true
+* Don't display log message if running without hooks
+* Add Support to Redis 4.0
+* Drop complex Redis identifier logic in favor of simple inspect
+* When a child process is killed, report the signal it was terminated with
+* Report a job that pruned worker was processing
+
+### Added
+
+* Allow to configure statistic data store
+
+## 1.27.4 (2017-04-15)
 
 ### Changed
 * Add support for specifying queues that workers should ignore when using globs

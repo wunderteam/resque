@@ -3,10 +3,12 @@ require 'test_helper'
 describe "Resque" do
   before do
     @original_redis = Resque.redis
+    @original_stat_data_store = Resque.stat_data_store
   end
 
   after do
     Resque.redis = @original_redis
+    Resque.stat_data_store = @original_stat_data_store
   end
 
   it "can push an item that depends on redis for encoding" do
@@ -28,7 +30,7 @@ describe "Resque" do
     new_namespace = Redis::Namespace.new("namespace", :redis => new_redis)
     Resque.redis = new_namespace
 
-    assert_equal new_namespace.client, Resque.redis.client
+    assert_equal new_namespace._client, Resque.redis._client
     assert_equal 0, Resque.size(:default)
   end
 
@@ -70,7 +72,7 @@ describe "Resque" do
     assert_equal '/tmp', job.args[1]
 
     assert Resque.reserve(:ivar)
-    assert_equal nil, Resque.reserve(:ivar)
+    assert_nil Resque.reserve(:ivar)
   end
 
   it "can remove jobs from a queue by way of an ivar" do
@@ -135,7 +137,7 @@ describe "Resque" do
     assert_equal '/tmp', job.args[1]
 
     assert Resque.reserve(:method)
-    assert_equal nil, Resque.reserve(:method)
+    assert_nil Resque.reserve(:method)
   end
 
   it "can define a queue for jobs by way of a method" do
@@ -202,7 +204,7 @@ describe "Resque" do
       assert_equal({ 'name' => 'chris' }, Resque.pop(:people))
       assert_equal({ 'name' => 'bob' }, Resque.pop(:people))
       assert_equal({ 'name' => 'mark' }, Resque.pop(:people))
-      assert_equal nil, Resque.pop(:people)
+      assert_nil Resque.pop(:people)
     end
 
     it "knows how big a queue is" do
@@ -228,7 +230,7 @@ describe "Resque" do
       assert_equal([{ 'name' => 'chris' }, { 'name' => 'bob' }], Resque.peek(:people, 0, 2))
       assert_equal([{ 'name' => 'chris' }, { 'name' => 'bob' }, { 'name' => 'mark' }], Resque.peek(:people, 0, 3))
       assert_equal({ 'name' => 'mark' }, Resque.peek(:people, 2, 1))
-      assert_equal nil, Resque.peek(:people, 3)
+      assert_nil Resque.peek(:people, 3)
       assert_equal [], Resque.peek(:people, 3, 2)
     end
 
@@ -237,7 +239,7 @@ describe "Resque" do
       assert_equal %w( cars people ).sort, Resque.queues.sort
       Resque.remove_queue(:people)
       assert_equal %w( cars ), Resque.queues
-      assert_equal nil, Resque.pop(:people)
+      assert_nil Resque.pop(:people)
     end
 
     it "knows what queues it is managing" do
@@ -281,16 +283,18 @@ describe "Resque" do
       assert_equal 3, stats[:queues]
       assert_equal 3, stats[:processed]
       assert_equal 1, stats[:failed]
-      if ENV.key? 'RESQUE_DISTRIBUTED'
-        assert_equal [Resque.redis.respond_to?(:server) ? 'localhost:9736, localhost:9737' : 'redis://localhost:9736/0, redis://localhost:9737/0'], stats[:servers]
-      else
-        assert_equal [Resque.redis.respond_to?(:server) ? 'localhost:9736' : 'redis://localhost:9736/0'], stats[:servers]
-      end
+      assert_equal [Resque.redis_id], stats[:servers]
     end
 
   end
 
   describe "stats" do
+    it "allows to set custom stat_data_store" do
+      dummy = Object.new
+      Resque.stat_data_store = dummy
+      assert_equal dummy, Resque.stat_data_store
+    end
+
     it "queue_sizes with one queue" do
       Resque.enqueue_to(:queue1, SomeJob)
 

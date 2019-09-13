@@ -7,7 +7,8 @@ module UTF8Util
   #
   # Returns self as valid UTF-8.
   def self.clean!(str)
-    raise NotImplementedError
+    return str if str.encoding.to_s == "UTF-8"
+    str.force_encoding("binary").encode("UTF-8", :invalid => :replace, :undef => :replace, :replace => REPLACEMENT_CHAR)
   end
 
   # Replace invalid UTF-8 character sequences with a replacement character
@@ -16,11 +17,4 @@ module UTF8Util
   def self.clean(str)
     clean!(str.dup)
   end
-
-end
-
-if RUBY_VERSION <= '1.9'
-  require 'resque/vendor/utf8_util/utf8_util_18'
-else
-  require 'resque/vendor/utf8_util/utf8_util_19'
 end

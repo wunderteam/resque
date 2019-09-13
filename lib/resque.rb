@@ -112,8 +112,8 @@ module Resque
   def redis=(server)
     case server
     when String
-      if server =~ /redis\:\/\//
-        redis = Redis.connect(:url => server, :thread_safe => true)
+      if server =~ /rediss?\:\/\//
+        redis = Redis.new(:url => server, :thread_safe => true)
       else
         server, namespace = server.split('/', 2)
         host, port, db = server.split(':')
@@ -147,26 +147,76 @@ module Resque
     data_store.identifier
   end
 
+  # Set the data store for the processed and failed statistics.
+  #
+  # By default it uses the same as `Resque.redis`, but different stores can be used.
+  #
+  # A custom store needs to obey the following API to work correctly
+  #
+  # class NullDataStore
+  #   # Returns the current value for the given stat.
+  #   def stat(stat)
+  #   end
+  #
+  #   # Increments the stat by the given value.
+  #   def increment_stat(stat, by)
+  #   end
+  #
+  #   # Decrements the stat by the given value.
+  #   def decrement_stat(stat, by)
+  #   end
+  #
+  #   # Clear the values for the given stat.
+  #   def clear_stat(stat)
+  #   end
+  # end
+  def stat_data_store=(stat_data_store)
+    Resque::Stat.data_store = stat_data_store
+  end
+
+  # Returns the data store for the statistics module.
+  def stat_data_store
+    Resque::Stat.data_store
+  end
+
   # Set or retrieve the current logger object
   attr_accessor :logger
 
   DEFAULT_HEARTBEAT_INTERVAL = 60
   DEFAULT_PRUNE_INTERVAL = DEFAULT_HEARTBEAT_INTERVAL * 5
 
+  # Defines how often a Resque worker updates the heartbeat key. Must be less
+  # than the prune interval.
   attr_writer :heartbeat_interval
   def heartbeat_interval
-    @heartbeat_interval || DEFAULT_HEARTBEAT_INTERVAL
+    if defined? @heartbeat_interval
+      @heartbeat_interval
+    else
+      DEFAULT_HEARTBEAT_INTERVAL
+    end
   end
 
+  # Defines how often Resque checks for dead workers.
   attr_writer :prune_interval
   def prune_interval
-    @prune_interval || DEFAULT_PRUNE_INTERVAL
+    if defined? @prune_interval
+      @prune_interval
+    else
+      DEFAULT_PRUNE_INTERVAL
+    end
   end
 
+  # By default, jobs are pushed to the back of the queue and popped from
+  # the front, resulting in "first in, first out" (FIFO) execution order.
+  # Set to true to push jobs to the front of the queue instead, resulting
+  # in "last in, first out" (LIFO) execution order.
   attr_writer :enqueue_front
   def enqueue_front
-    return @enqueue_front unless @enqueue_front.nil?
-    @enqueue_front = false
+    if defined? @enqueue_front
+      @enqueue_front
+    else
+      @enqueue_front = false
+    end
   end
 
   # The `before_first_fork` hook will be run in the **parent** process
@@ -424,7 +474,7 @@ module Resque
   # Given a class, try to extrapolate an appropriate queue based on a
   # class instance variable or `queue` method.
   def queue_from_class(klass)
-    klass.instance_variable_get(:@queue) ||
+    (klass.instance_variable_defined?(:@queue) && klass.instance_variable_get(:@queue)) ||
       (klass.respond_to?(:queue) and klass.queue)
   end
 
@@ -483,7 +533,7 @@ module Resque
   # Returns a hash, similar to redis-rb's #info, of interesting stats.
   def info
     return {
-      :pending   => queue_sizes.inject(0) { |sum, (queue_name, queue_size)| sum + queue_size },
+      :pending   => queue_sizes.inject(0) { |sum, (_queue_name, queue_size)| sum + queue_size },
       :processed => Stat[:processed],
       :queues    => queues.size,
       :workers   => workers.size.to_i,
@@ -543,6 +593,8 @@ module Resque
 
   private
 
+  @hooks = Hash.new { |h, k| h[k] = [] }
+
   # Register a new proc as a hook. If the block is nil this is the
   # equivalent of removing all hooks of the given name.
   #
@@ -550,26 +602,18 @@ module Resque
   def register_hook(name, block)
     return clear_hooks(name) if block.nil?
 
-    @hooks ||= {}
-    @hooks[name] ||= []
-
     block = Array(block)
     @hooks[name].concat(block)
   end
 
   # Clear all hooks given a hook name.
   def clear_hooks(name)
-    @hooks && @hooks[name] = []
-  end
-
-  # Retrieve all hooks
-  def hooks
-    @hooks || {}
+    @hooks[name] = []
   end
 
   # Retrieve all hooks of a given name.
   def hooks(name)
-    (@hooks && @hooks[name]) || []
+    @hooks[name]
   end
 end
 

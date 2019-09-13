@@ -3,7 +3,6 @@ Resque
 
 [![Gem Version](https://badge.fury.io/rb/resque.svg)](https://rubygems.org/gems/resque)
 [![Build Status](https://travis-ci.org/resque/resque.svg)](https://travis-ci.org/resque/resque)
-[![Coverage Status](https://coveralls.io/repos/github/resque/resque/badge.svg?branch=1-x-stable)](https://coveralls.io/r/resque/resque?branch=1-x-stable)
 
 Resque (pronounced like "rescue") is a Redis-backed library for creating
 background jobs, placing those jobs on multiple queues, and processing
@@ -33,6 +32,9 @@ store jobs as simple JSON packages.
 The Resque frontend tells you what workers are doing, what workers are
 not doing, what queues you're using, what's in those queues, provides
 general usage stats, and helps you track failures.
+
+Resque now supports Ruby 2.3.0 and above.
+We will also only be supporting Redis 3.0 and above going forward.
 
 
 The Blog Post
@@ -196,7 +198,7 @@ We plan to provide first class `async` support in a future release.
 If a job raises an exception, it is logged and handed off to the
 `Resque::Failure` module. Failures are logged either locally in Redis
 or using some different backend. To see exceptions while developing,
-use VERBOSE env variable, see details below under Logging.
+see details below under Logging.
 
 For example, Resque ships with Airbrake support. To configure it, put
 the following into an initialisation file or into your rake job:
@@ -267,18 +269,47 @@ but in the Resque workers it's fine.
 
 ### Logging
 
-Workers support basic logging to STDOUT. If you start them with the
-`VERBOSE` env variable set, they will print basic debugging
-information. You can also set the `VVERBOSE` (very verbose) env
-variable.
+Workers support basic logging to STDOUT.
 
-    $ VVERBOSE=1 QUEUE=file_serve rake environment resque:work
+You can control the logging threshold using `Resque.logger.level`:
+
+```ruby
+# config/initializers/resque.rb
+Resque.logger.level = Logger::DEBUG
+```
 
 If you want Resque to log to a file, in Rails do:
 
 ```ruby
 # config/initializers/resque.rb
 Resque.logger = Logger.new(Rails.root.join('log', "#{Rails.env}_resque.log"))
+```
+
+### Storing Statistics
+ Resque allows to store count of processed and failed jobs.
+
+ By default it will store it in Redis using the keys `stats:processed` and `stats:failed`.
+
+ Some apps would want another stats store, or even a null store:
+
+ ```ruby
+# config/initializers/resque.rb
+class NullDataStore
+  def stat(stat)
+    0
+  end
+
+  def increment_stat(stat, by)
+  end
+
+  def decrement_stat(stat, by)
+  end
+
+  def clear_stat(stat)
+  end
+end
+
+Resque.stat_data_store = NullDataStore.new
 ```
 
 ### Process IDs (PIDs)
@@ -290,7 +321,7 @@ worker process.  Use the PIDFILE option for easy access to the PID:
 
 ### Running in the background
 
-(Only supported with ruby >= 1.9). There are scenarios where it's helpful for
+There are scenarios where it's helpful for
 the resque worker to run itself in the background (usually in combination with
 PIDFILE).  Use the BACKGROUND option so that rake will return as soon as the
 worker is started.
@@ -474,6 +505,11 @@ same time. By default this causes an immediate shutdown of any running job
 leading to frequent `Resque::TermException` errors.  For short running jobs, a simple
 solution is to give a small amount of time for the job to finish
 before killing it.
+
+Resque doesn't handle this out of the box (for both cedar-14 and heroku-16), you need to
+install the [`resque-heroku-signals`](https://github.com/iloveitaly/resque-heroku-signals)
+addon which adds the required signal handling to make the behavior described above work.
+Related issue: https://github.com/resque/resque/issues/1559
 
 To accomplish this set the following environment variables:
 
@@ -668,7 +704,7 @@ require 'your/app'
 require 'resque/tasks'
 ```
 
-If you're using Rails 5.x, include the following in lib/tasks/resque.rb:
+If you're using Rails 5.x, include the following in lib/tasks/resque.rake:
 
 ```ruby
 require 'resque/tasks'
@@ -787,15 +823,16 @@ Here's our `config/resque.yml`:
     test: localhost:6379
     staging: redis1.se.github.com:6379
     fi: localhost:6379
-    production: redis1.ae.github.com:6379
+    production: <%= ENV['REDIS_URL'] %>
 
 And our initializer:
 
 ``` ruby
 rails_root = ENV['RAILS_ROOT'] || File.dirname(__FILE__) + '/../..'
 rails_env = ENV['RAILS_ENV'] || 'development'
+config_file = rails_root + '/config/resque.yml'
 
-resque_config = YAML.load_file(rails_root + '/config/resque.yml')
+resque_config = YAML::load(ERB.new(IO.read(config_file)).result)
 Resque.redis = resque_config[rails_env]
 ```
 
@@ -818,7 +855,7 @@ Plugins and Hooks
 -----------------
 
 For a list of available plugins see
-<http://wiki.github.com/resque/resque/plugins>.
+<https://github.com/resque/resque/wiki/plugins>.
 
 If you'd like to write your own plugin, or want to customize Resque
 using hooks (such as `Resque.after_fork`), see

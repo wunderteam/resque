@@ -7,12 +7,19 @@ module Resque
   #   Kill a stat: Stat.clear(name)
   module Stat
     extend self
-    
-    # Direct access to the Redis instance.
+
     def redis
-      Resque.redis
+      warn '[Resque] [Deprecation] Resque::Stat #redis method is deprecated (please use #data_strore)'
+      data_store
     end
-    alias :data_store :redis
+
+    def data_store
+      @data_store ||= Resque.redis
+    end
+
+    def data_store=(data_store)
+      @data_store = data_store
+    end
 
     # Returns the int value of a stat, given a string stat name.
     def get(stat)
@@ -42,7 +49,7 @@ module Resque
     # Can optionally accept a second int parameter. The stat is then
     # decremented by that amount.
     def decr(stat, by = 1)
-      data_store.decremet_stat(stat,by)
+      data_store.decrement_stat(stat,by)
     end
 
     # Decrements a stat by one.

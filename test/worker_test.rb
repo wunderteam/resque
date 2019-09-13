@@ -60,13 +60,9 @@ describe "Resque::Worker" do
   end
 
   it "daemonizes when ENV['BACKGROUND'] is supplied and #prepare is called" do
-    if Process.respond_to?("daemon")
-      Process.expects(:daemon)
-      with_background do
-        @worker.prepare
-      end
-    else
-      skip("Process.daemon not supported; requires ruby >= 1.9")
+    Process.expects(:daemon)
+    with_background do
+      @worker.prepare
     end
   end
 
@@ -80,7 +76,7 @@ describe "Resque::Worker" do
       assert_equal "at_exit", File.open(tmpfile).read.strip
     else
       # ensure we actually fork
-      Resque.redis.client.reconnect
+      Resque.redis.reconnect
       Resque::Job.create(:at_exit_jobs, AtExitJob, tmpfile)
       worker = Resque::Worker.new(:at_exit_jobs)
       worker.run_at_exit_hooks = true
@@ -108,7 +104,7 @@ describe "Resque::Worker" do
       Process.waitpid(worker_pid)
     else
       # ensure we actually fork
-      Resque.redis.client.reconnect
+      Resque.redis.reconnect
       Resque::Job.create(:not_failing_job, RaiseExceptionOnFailure)
       worker = Resque::Worker.new(:not_failing_job)
       worker.run_at_exit_hooks = true
@@ -128,7 +124,7 @@ describe "Resque::Worker" do
       assert !File.exist?(tmpfile), "The file '#{tmpfile}' exists, at_exit hooks were run"
     else
       # ensure we actually fork
-      Resque.redis.client.reconnect
+      Resque.redis.reconnect
       Resque::Job.create(:at_exit_jobs, AtExitJob, tmpfile)
       worker = Resque::Worker.new(:at_exit_jobs)
       suppress_warnings do
@@ -157,6 +153,7 @@ describe "Resque::Worker" do
     @worker.unregister_worker
     assert_equal 1, Resque::Failure.count
     assert_equal('Resque::DirtyExit', Resque::Failure.all['exception'])
+    assert_equal('Job still being processed', Resque::Failure.all['error'])
   end
 
   it "fails uncompleted jobs with worker exception on exit" do
@@ -176,9 +173,9 @@ describe "Resque::Worker" do
     exception_caught = assert_raises Redis::CannotConnectError do
       @worker.unregister_worker(raised_exception(StandardError,error_message))
     end
-    assert_match /StandardError/, exception_caught.message
-    assert_match /#{error_message}/, exception_caught.message
-    assert_match /Redis::CannotConnectError/, exception_caught.message
+    assert_match(/StandardError/, exception_caught.message)
+    assert_match(/#{error_message}/, exception_caught.message)
+    assert_match(/Redis::CannotConnectError/, exception_caught.message)
   end
 
   def raised_exception(klass,message)
@@ -202,7 +199,7 @@ describe "Resque::Worker" do
     @worker.working_on(job)
     @worker.unregister_worker
     assert_equal 1, Resque::Failure.count
-    assert(SimpleJobWithFailureHandling.exception.kind_of?(Resque::DirtyExit))
+    assert_kind_of Resque::DirtyExit, SimpleJobWithFailureHandling.exception
   end
 
   it "fails uncompleted jobs on exit and unregisters without erroring out and logs helpful message if error occurs during a failure hook" do
@@ -338,10 +335,11 @@ describe "Resque::Worker" do
     assert_equal false, @worker.work_one_job
   end
 
-  it "the queues method avoids unnecessary calls to smembers" do
-    worker = Resque::Worker.new(:critical, :high)
-    Resque.redis.expects(:smembers).at_most_once
-    assert_equal ["critical", "high"], worker.queues
+  it "the queues method avoids unnecessary calls to retrieve queue names" do
+    worker = Resque::Worker.new(:critical, :high, "num*")
+    actual_queues = ["critical", "high", "num1", "num2"]
+    Resque.data_store.expects(:queue_names).once.returns(actual_queues)
+    assert_equal actual_queues, worker.queues
   end
 
   it "can work on all queues" do
@@ -670,7 +668,7 @@ describe "Resque::Worker" do
     without_forking do
       @worker.extend(AssertInWorkBlock).work(0) do
         found = Resque::Worker.find('blah-blah')
-        assert_equal nil, found
+        assert_nil found
       end
     end
   end
@@ -716,6 +714,42 @@ describe "Resque::Worker" do
     assert_equal [], Resque::Worker.all_workers_with_expired_heartbeats
   end
 
+  it "does not prune if another worker has pruned (started pruning) recently" do
+    now = Time.now
+    workerA = Resque::Worker.new(:jobs)
+    workerA.to_s = 'workerA:1:jobs'
+    workerA.register_worker
+    workerA.heartbeat!(now - Resque.prune_interval - 1)
+    assert_equal 1, Resque.workers.size
+    assert_equal [workerA], Resque::Worker.all_workers_with_expired_heartbeats
+
+    workerB = Resque::Worker.new(:jobs)
+    workerB.to_s = 'workerB:1:jobs'
+    workerB.register_worker
+    workerB.heartbeat!(now)
+    assert_equal 2, Resque.workers.size
+
+    workerB.prune_dead_workers
+    assert_equal [], Resque::Worker.all_workers_with_expired_heartbeats
+
+    workerC = Resque::Worker.new(:jobs)
+    workerC.to_s = "workerC:1:jobs"
+    workerC.register_worker
+    workerC.heartbeat!(now - Resque.prune_interval - 1)
+    assert_equal 2, Resque.workers.size
+    assert_equal [workerC], Resque::Worker.all_workers_with_expired_heartbeats
+
+    workerD = Resque::Worker.new(:jobs)
+    workerD.to_s = 'workerD:1:jobs'
+    workerD.register_worker
+    workerD.heartbeat!(now)
+    assert_equal 3, Resque.workers.size
+
+    # workerC does not get pruned because workerB already pruned recently
+    workerD.prune_dead_workers
+    assert_equal [workerC], Resque::Worker.all_workers_with_expired_heartbeats
+  end
+
   it "does not prune workers that haven't set a heartbeat" do
     workerA = Resque::Worker.new(:jobs)
     workerA.to_s = "bar:3:jobs"
@@ -737,7 +771,7 @@ describe "Resque::Worker" do
     assert_instance_of Time, workerA.heartbeat
 
     workerA.remove_heartbeat
-    assert_equal nil, workerA.heartbeat
+    assert_nil workerA.heartbeat
   end
 
   it "removes old heartbeats before starting heartbeat thread" do
@@ -762,7 +796,7 @@ describe "Resque::Worker" do
       sleep 0.1 until Resque::Worker.all_heartbeats.empty?
     end
 
-    assert_equal nil, workerA.heartbeat
+    assert_nil workerA.heartbeat
   end
 
   it "does not generate heartbeats that depend on the worker clock, but only on the server clock" do
@@ -785,6 +819,23 @@ describe "Resque::Worker" do
     end
   end
 
+  it "correctly reports a job that the pruned worker was processing" do
+    workerA = Resque::Worker.new(:jobs)
+    workerA.to_s = "jobs01.company.com:3:jobs"
+    workerA.register_worker
+
+    job = Resque::Job.new(:jobs, {'class' => 'GoodJob', 'args' => "blah"})
+    workerA.working_on(job)
+    workerA.heartbeat!(Time.now - Resque.prune_interval - 1)
+
+    @worker.prune_dead_workers
+
+    assert_equal 1, Resque::Failure.count
+    failure = Resque::Failure.all(0)
+    assert_equal "Resque::PruneDeadWorkerDirtyExit", failure["exception"]
+    assert_equal "Worker jobs01.company.com:3:jobs did not gracefully exit while processing GoodJob", failure["error"]
+  end
+
   # This was added because PruneDeadWorkerDirtyExit does not have a backtrace,
   # and the error handling code did not account for that.
   it "correctly reports errors that occur while pruning workers" do
@@ -800,9 +851,9 @@ describe "Resque::Worker" do
       @worker.prune_dead_workers
     end
 
-    assert_match /PruneDeadWorkerDirtyExit/, exception_caught.message
-    assert_match /bar:3:jobs/, exception_caught.message
-    assert_match /Redis::CannotConnectError/, exception_caught.message
+    assert_match(/PruneDeadWorkerDirtyExit/, exception_caught.message)
+    assert_match(/bar:3:jobs/, exception_caught.message)
+    assert_match(/Redis::CannotConnectError/, exception_caught.message)
   end
 
   it "cleans up dead worker info on start (crash recovery)" do
@@ -994,12 +1045,10 @@ describe "Resque::Worker" do
     Resque.logger   = Logger.new(messages)
 
     with_fake_time(Time.parse("15:44:33 2011-03-02")) do
-      last_puts = ""
-
       @worker.very_verbose = true
       @worker.log("some log text")
 
-      assert_match /\*\* \[15:44:33 2011-03-02\] \d+: some log text/, messages.string
+      assert_match(/\*\* \[15:44:33 2011-03-02\] \d+: some log text/, messages.string)
     end
   end
 
@@ -1088,11 +1137,11 @@ describe "Resque::Worker" do
   end
 
   it "no reconnects to redis when not forking" do
-    original_connection = Resque.redis.client.connection.instance_variable_get("@sock")
+    original_connection = Resque.redis._client.connection.instance_variable_get("@sock")
     without_forking do
       @worker.work(0)
     end
-    assert_equal original_connection, Resque.redis.client.connection.instance_variable_get("@sock")
+    assert_equal original_connection, Resque.redis._client.connection.instance_variable_get("@sock")
   end
 
   it "logs errors with the correct logging level" do
@@ -1165,15 +1214,15 @@ describe "Resque::Worker" do
     end
 
     it "reconnects to redis after fork" do
-      original_connection = Resque.redis.client.connection.instance_variable_get("@sock").object_id
+      original_connection = Resque.redis._client.connection.instance_variable_get("@sock").object_id
       new_connection = run_in_job do
-        Resque.redis.client.connection.instance_variable_get("@sock").object_id
+        Resque.redis._client.connection.instance_variable_get("@sock").object_id
       end
       refute_equal original_connection, new_connection
     end
 
     it "tries to reconnect three times before giving up and the failure does not unregister the parent" do
-      @worker.redis.client.stubs(:reconnect).raises(Redis::BaseConnectionError)
+      @worker.redis._client.stubs(:reconnect).raises(Redis::BaseConnectionError)
       @worker.stubs(:sleep)
 
       Resque.logger = DummyLogger.new
@@ -1187,9 +1236,7 @@ describe "Resque::Worker" do
     end
 
     it "tries to reconnect three times before giving up" do
-      captured_worker = nil
-
-      @worker.redis.client.stubs(:reconnect).raises(Redis::BaseConnectionError)
+      @worker.redis._client.stubs(:reconnect).raises(Redis::BaseConnectionError)
       @worker.stubs(:sleep)
 
       Resque.logger = DummyLogger.new
@@ -1205,7 +1252,7 @@ describe "Resque::Worker" do
         @queue = :long_running_job
 
         def self.perform(run_time)
-          Resque.redis.client.reconnect # get its own connection
+          Resque.redis.reconnect # get its own connection
           Resque.redis.rpush('pre-term-timeout-test:start', Process.pid)
           sleep run_time
           Resque.redis.rpush('pre-term-timeout-test:result', 'Finished Normally')
@@ -1227,7 +1274,7 @@ describe "Resque::Worker" do
 
             worker_pid = Kernel.fork do
               # reconnect to redis
-              Resque.redis.client.reconnect
+              Resque.redis.reconnect
 
               worker = Resque::Worker.new(:long_running_job)
               worker.pre_shutdown_timeout = pre_shutdown_timeout
@@ -1283,28 +1330,18 @@ describe "Resque::Worker" do
       end
     end
 
-    it "will notify failure hooks when a job is killed by a signal" do
+    it "will notify failure hooks and attach process status when a job is killed by a signal" do
       Resque.enqueue(SuicidalJob)
       suppress_warnings do
         @worker.work(0)
       end
-      assert_equal Resque::DirtyExit, SuicidalJob.send(:class_variable_get, :@@failure_exception).class
-    end
 
-    it "will attach the process status when a job is killed by a signal" do
-      Resque.enqueue(SuicidalJob)
-      suppress_warnings do
-        @worker.work(0)
-      end
-      assert_equal Process::Status, SuicidalJob.send(:class_variable_get, :@@failure_exception).process_status.class
-    end
+      exception = SuicidalJob.send(:class_variable_get, :@@failure_exception)
 
-    it "when a job is killed by the KILL signal, the termsig on process_status is 9" do
-      Resque.enqueue(SuicidalJob)
-      suppress_warnings do
-        @worker.work(0)
-      end
-      assert_equal 9, SuicidalJob.send(:class_variable_get, :@@failure_exception).process_status.termsig
+      assert_kind_of Resque::DirtyExit, exception
+      assert_match(/Child process received unhandled signal pid \d+ SIGKILL \(signal 9\)/, exception.message)
+
+      assert_kind_of Process::Status, exception.process_status
     end
   end
 end

@@ -2,16 +2,15 @@ require 'test_helper'
 require 'tempfile'
 
 describe "Resque Hooks" do
-  before do
-    @worker = Resque::Worker.new(:jobs)
-
-    $called = false
-
-    class CallNotifyJob
-      def self.perform
-        $called = true
-      end
+  class CallNotifyJob
+    def self.perform
+      $called = true
     end
+  end
+
+  before do
+    $called = false
+    @worker = Resque::Worker.new(:jobs)
   end
 
   it 'retrieving hooks if none have been set' do
@@ -32,7 +31,6 @@ describe "Resque Hooks" do
   end
 
   it 'it calls before_fork before each job' do
-    skip("TRAAAVIS!!!!") if RUBY_VERSION == "1.8.7"
     file = Tempfile.new("resque_before_fork") # to share state with forked process
 
     begin
@@ -54,7 +52,6 @@ describe "Resque Hooks" do
   end
 
   it 'it calls after_fork after each job' do
-    skip("TRAAAVIS!!!!") if RUBY_VERSION == "1.8.7"
     file = Tempfile.new("resque_after_fork") # to share state with forked process
 
     begin
